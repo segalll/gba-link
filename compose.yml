@@ -1,0 +1,20 @@
+services:
+  gba-link:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      BROKER_SECRET: ${GBA_LINK_BROKER_SECRET:?Set a shared broker secret}
+      BIND_HOST: 127.0.0.1
+      PORT: 8080
+      ICE_SERVERS: ${GBA_LINK_ICE_SERVERS:-[]}
+    volumes:
+      - ${ROMM_LIBRARY:?Set the RomM library directory}:/roms:ro
+      - gba-link-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  gba-link-data:

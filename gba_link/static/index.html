@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GBA Link Play</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="client.js" type="module"></script>
+  </head>
+  <body>
+    <main>
+      <video
+        id="screen"
+        autoplay
+        playsinline
+        tabindex="0"
+        aria-label="GBA screen"
+      ></video>
+      <p id="status" role="status">Connecting...</p>
+      <button id="connect" hidden>Reconnect</button>
+      <button id="sound">Enable sound</button>
+      <details>
+        <summary>Controls</summary>
+        <p>
+          Arrow keys: move. X: A. Z: B. Enter: Start. Shift: Select. A/S: L/R.
+          Gamepads are supported.
+        </p>
+        <p>
+          The game pauses if either player disconnects. Save in-game before the
+          host closes the room in RomM.
+        </p>
+      </details>
+      <div class="controls" aria-label="Touch controls">
+        <div class="dpad">
+          <button data-key="6" class="up" aria-label="Up">↑</button>
+          <button data-key="5" class="left" aria-label="Left">←</button>
+          <button data-key="4" class="right" aria-label="Right">→</button>
+          <button data-key="7" class="down" aria-label="Down">↓</button>
+        </div>
+        <div class="buttons">
+          <button data-key="9">L</button><button data-key="8">R</button>
+          <button data-key="1">B</button><button data-key="0">A</button>
+          <button data-key="2">Select</button
+          ><button data-key="3">Start</button>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
