@@ -147,7 +147,7 @@ async function connect() {
     });
     channel.onopen = () => {
       send();
-      timer = setInterval(send, 50);
+      timer = setInterval(send, 1000 / 120);
     };
     await peer.setLocalDescription(await peer.createOffer());
     if (peer.iceGatheringState !== "complete")
