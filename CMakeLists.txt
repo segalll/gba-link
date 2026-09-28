@@ -13,7 +13,10 @@ set(BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(M_CORE_GB OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(mgba
     GIT_REPOSITORY https://github.com/mgba-emu/mgba.git
-    GIT_TAG 1d201b22a86d31dfb3bc75145403711f6762015f)
+    GIT_TAG 1d201b22a86d31dfb3bc75145403711f6762015f
+    PATCH_COMMAND ${CMAKE_COMMAND}
+        "-DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/native/mgba-lockstep.patch"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/native/patch-mgba.cmake)
 FetchContent_MakeAvailable(mgba)
 find_package(Threads REQUIRED)
 add_library(gba_link SHARED native/link.c)

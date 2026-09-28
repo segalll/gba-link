@@ -1,4 +1,6 @@
 import asyncio
+import statistics
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -58,4 +60,27 @@ async def test_video_waits_for_new_frames_and_can_cancel_while_paused(test_rom):
         pending.cancel()
         await asyncio.gather(pending, return_exceptions=True)
         track.stop()
+        pair.close()
+
+
+async def test_linked_video_frames_arrive_together(test_rom):
+    pair = Pair(test_rom, [None, None])
+    tracks = [media.Video(pair, i) for i in range(2)]
+
+    async def receive(track):
+        times = []
+        for _ in range(20):
+            await track.recv()
+            times.append(time.monotonic())
+        return times
+
+    try:
+        pair.pause(False)
+        left, right = await asyncio.wait_for(
+            asyncio.gather(*(receive(track) for track in tracks)), 2
+        )
+        assert statistics.median(abs(a - b) for a, b in zip(left, right)) < 0.008
+    finally:
+        for track in tracks:
+            track.stop()
         pair.close()

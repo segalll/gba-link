@@ -1,0 +1,13 @@
+diff --git a/src/gba/sio/lockstep.c b/src/gba/sio/lockstep.c
+--- a/src/gba/sio/lockstep.c
++++ b/src/gba/sio/lockstep.c
+@@ -1000,7 +1000,8 @@ void _lockstepEvent(struct mTiming* timing, void* context, uint32_t cyclesLate) {
+ 		nextEvent = player->queue->timestamp - GBASIOLockstepTime(player);
+ 	}
+ 
+-	if (player->playerId != 0 && nextEvent <= LOCKSTEP_INTERVAL) {
++	// Finish the cycles granted by the shared clock before sleeping.
++	if (player->playerId != 0 && nextEvent <= 0) {
+ 		if (!player->queue || wasDetach) {
+ 			GBASIOLockstepPlayerSleep(player);
+ 			// XXX: Is there a better way to gain sync lock at the beginning?

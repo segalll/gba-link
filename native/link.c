@@ -4,6 +4,7 @@
 #include <mgba/core/core.h>
 #include <mgba/core/lockstep.h>
 #include <mgba/core/thread.h>
+#include <mgba/core/timing.h>
 #include <mgba/gba/interface.h>
 #include <mgba/internal/gba/sio/lockstep.h>
 #include <mgba-util/audio-buffer.h>
@@ -57,8 +58,11 @@ static void frame(struct mCoreThread *thread) {
     ++p->frame;
     eventfd_write(p->video_fd, 1);
     pthread_mutex_unlock(&p->mutex);
-    /* Lockstep keeps the other core in sync with this clock. */
     if (!p->paced) return;
+    /* Advance the link clock so the other core can finish its frame before we sleep. */
+    struct mTimingEvent *sync = &p->driver.event;
+    mTimingDeschedule(thread->core->timing, sync);
+    sync->callback(thread->core->timing, sync->context, 0);
     int64_t now = now_ns();
     if (p->deadline < now - 16742706) {
         p->deadline = now;
