@@ -9,6 +9,17 @@ start:
     ldr r0, =0x04000000
     ldr r1, =0x0403
     strh r1, [r0]
+    @ Continuous square wave for the audio test.
+    mov r1, #0x80
+    strh r1, [r0, #0x84]
+    ldr r1, =0x2277
+    strh r1, [r0, #0x80]
+    mov r1, #2
+    strh r1, [r0, #0x82]
+    ldr r1, =0xf080
+    strh r1, [r0, #0x68]
+    ldr r1, =0x8400
+    strh r1, [r0, #0x6c]
     ldr r2, =0x06000000
     ldr r3, =0x04000128
     ldr r4, =0x04000130

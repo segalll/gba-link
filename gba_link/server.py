@@ -18,6 +18,7 @@ from aiortc import (
     RTCConfiguration,
     RTCIceServer,
     RTCPeerConnection,
+    RTCRtpSender,
     RTCSessionDescription,
 )
 
@@ -392,11 +393,15 @@ async def offer(request):
             pair.keys(player, mask)
 
     try:
+        video = peer.addTransceiver(Video(pair, player), direction="sendonly")
+        codecs = RTCRtpSender.getCapabilities("video").codecs
+        video.setCodecPreferences(
+            sorted(codecs, key=lambda codec: codec.mimeType != "video/H264")
+        )
+        peer.addTrack(Audio(pair, player))
         await peer.setRemoteDescription(
             RTCSessionDescription(sdp=payload["sdp"], type="offer")
         )
-        peer.addTrack(Video(pair, player))
-        peer.addTrack(Audio(pair, player))
         await peer.setLocalDescription(await peer.createAnswer())
     except Exception:
         peer.remove_all_listeners()

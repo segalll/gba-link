@@ -111,6 +111,7 @@ struct gba_link *gba_link_create(const char *rom, const char *save0, const char 
         mCoreInitConfig(core, "romm-link");
         mCoreConfigSetDefaultIntValue(&core->config, "logLevel", 0);
         mCoreConfigSetDefaultIntValue(&core->config, "useBios", 0);
+        mCoreConfigSetDefaultIntValue(&core->config, "volume", 0x100);
         mCoreLoadConfig(core);
         core->opts.audioSync = false;
         core->opts.videoSync = false;

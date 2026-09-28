@@ -296,6 +296,9 @@ async def test_two_peers_receive_video_audio_and_pause_on_disconnect(client, tes
                 isinstance(f["audio"], AudioFrame) and f["audio"].sample_rate == 48000
                 for f in latest
             )
+            for frames in latest:
+                samples = memoryview(bytes(frames["audio"].planes[0])).cast("h")
+                assert max(samples) - min(samples) > 1000
             colors = [bytes(f["video"].planes[0])[20:120] for f in latest]
             assert abs(sum(colors[0]) - sum(colors[1])) > 1000
             service = client.server.app[SERVICE]

@@ -63,7 +63,13 @@ function send() {
 for (const event of ["keydown", "keyup"]) {
   window.addEventListener(event, (e) => {
     const bit = mapping[e.code];
-    if (bit === undefined || e.target.closest("button, summary")) return;
+    if (bit === undefined) return;
+    if (
+      event === "keydown" &&
+      e.code === "Enter" &&
+      e.target.closest("button, summary")
+    )
+      return;
     e.preventDefault();
     if (event === "keydown") keys |= 1 << bit;
     else keys &= ~(1 << bit);

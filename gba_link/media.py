@@ -20,7 +20,10 @@ class Video(MediaStreamTrack):
     async def recv(self):
         await asyncio.sleep(max(0, self.deadline - time.monotonic()))
         now = time.monotonic()
-        self.deadline = now + 1 / 60
+        interval = 280896 / 16777216  # GBA cycles per frame / CPU frequency.
+        self.deadline += interval
+        if self.deadline < now:
+            self.deadline = now + interval
         frame = av.VideoFrame(240, 160, "rgba")
         frame.planes[0].update(self.pair.video(self.player))
         frame.pts = int((now - self.started) * 90000)
@@ -39,9 +42,12 @@ class Audio(MediaStreamTrack):
 
     async def recv(self):
         await asyncio.sleep(max(0, self.deadline - time.monotonic()))
-        # Schedule from now so delayed audio isn't sent in a burst.
-        self.deadline = time.monotonic() + 0.02
         count = self.pair.rate // 50
+        now = time.monotonic()
+        interval = count / self.pair.rate
+        self.deadline += interval
+        if self.deadline < now:
+            self.deadline = now + interval
         frame = av.AudioFrame(format="s16", layout="stereo", samples=count)
         frame.planes[0].update(self.pair.audio(self.player, count))
         frame.sample_rate = self.pair.rate
