@@ -8,6 +8,7 @@
 #include <mgba/gba/interface.h>
 #include <mgba/internal/gba/sio/lockstep.h>
 #include <mgba-util/audio-buffer.h>
+#include <mgba-util/audio-resampler.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 
 #define PIXELS (240 * 160)
 #define AUDIO_FRAMES 2048
+#define AUDIO_RATE 48000
 
 struct player {
     struct mAVStream stream;
@@ -28,13 +30,11 @@ struct player {
     atomic_uint keys;
     mColor render[PIXELS];
     mColor video[PIXELS];
-    int16_t audio[AUDIO_FRAMES * 2];
-    size_t audio_read;
-    size_t audio_count;
+    struct mAudioBuffer audio;
+    struct mAudioResampler resampler;
     uint64_t frame;
     int video_fd;
     int64_t deadline;
-    unsigned audio_rate;
     bool paced;
     bool attached;
 };
@@ -79,19 +79,15 @@ static void keys_read(void *context) {
 
 static void audio(struct mAVStream *stream, struct mAudioBuffer *buffer) {
     struct player *p = (struct player *) stream;
-    int16_t samples[512 * 2];
-    size_t count;
+    unsigned rate = p->thread.core->audioSampleRate(p->thread.core);
+    size_t needed = (mAudioBufferAvailable(buffer) * AUDIO_RATE + rate - 1) / rate;
     pthread_mutex_lock(&p->mutex);
-    while ((count = mAudioBufferRead(buffer, samples, 512))) {
-        for (size_t i = 0; i < count; ++i) {
-            if (p->audio_count == AUDIO_FRAMES) {
-                p->audio_read = (p->audio_read + 1) % AUDIO_FRAMES;
-                --p->audio_count;
-            }
-            size_t pos = (p->audio_read + p->audio_count++) % AUDIO_FRAMES;
-            memcpy(&p->audio[pos * 2], &samples[i * 2], 2 * sizeof(int16_t));
-        }
+    size_t available = mAudioBufferAvailable(&p->audio);
+    if (available + needed > AUDIO_FRAMES) {
+        mAudioBufferRead(&p->audio, NULL, available + needed - AUDIO_FRAMES);
     }
+    mAudioResamplerSetSource(&p->resampler, buffer, rate, true);
+    mAudioResamplerProcess(&p->resampler);
     pthread_mutex_unlock(&p->mutex);
 }
 
@@ -102,9 +98,13 @@ struct gba_link *gba_link_create(const char *rom, const char *save0, const char 
     const char *saves[2] = {save0, save1};
     GBASIOLockstepCoordinatorInit(&link->coordinator);
     for (int i = 0; i < 2; ++i) {
-        pthread_mutex_init(&link->players[i].mutex, NULL);
-        atomic_init(&link->players[i].keys, 0);
-        link->players[i].video_fd = -1;
+        struct player *p = &link->players[i];
+        pthread_mutex_init(&p->mutex, NULL);
+        atomic_init(&p->keys, 0);
+        p->video_fd = -1;
+        mAudioBufferInit(&p->audio, AUDIO_FRAMES, 2);
+        mAudioResamplerInit(&p->resampler, mINTERPOLATOR_SINC);
+        mAudioResamplerSetDestination(&p->resampler, &p->audio, AUDIO_RATE);
     }
     link->paused = true;
     for (int i = 0; i < 2; ++i) {
@@ -139,7 +139,6 @@ struct gba_link *gba_link_create(const char *rom, const char *save0, const char 
         core->addCoreCallbacks(core, &callbacks);
         if (!mCoreThreadStart(&p->thread)) goto fail;
         mCoreThreadPause(&p->thread);
-        p->audio_rate = core->audioSampleRate(core);
     }
     for (int i = 0; i < 2; ++i) {
         struct player *p = &link->players[i];
@@ -179,6 +178,8 @@ void gba_link_destroy(struct gba_link *link) {
             mCoreConfigDeinit(&p->thread.core->config);
             p->thread.core->deinit(p->thread.core);
         }
+        mAudioResamplerDeinit(&p->resampler);
+        mAudioBufferDeinit(&p->audio);
         pthread_mutex_destroy(&p->mutex);
         if (p->video_fd >= 0) close(p->video_fd);
     }
@@ -224,18 +225,13 @@ size_t gba_link_audio(struct gba_link *link, int player, int16_t *stereo, size_t
     if (!link || !stereo || player < 0 || player >= 2) return 0;
     struct player *p = &link->players[player];
     pthread_mutex_lock(&p->mutex);
-    size_t count = frames < p->audio_count ? frames : p->audio_count;
-    for (size_t i = 0; i < count; ++i) {
-        memcpy(&stereo[i * 2], &p->audio[p->audio_read * 2], 2 * sizeof(int16_t));
-        p->audio_read = (p->audio_read + 1) % AUDIO_FRAMES;
-    }
-    p->audio_count -= count;
+    size_t count = mAudioBufferRead(&p->audio, stereo, frames);
     pthread_mutex_unlock(&p->mutex);
     return count;
 }
 
 unsigned gba_link_audio_rate(struct gba_link *link, int player) {
-    return link && player >= 0 && player < 2 ? link->players[player].audio_rate : 0;
+    return link && player >= 0 && player < 2 ? AUDIO_RATE : 0;
 }
 
 size_t gba_link_save(struct gba_link *link, int player, void *data, size_t capacity) {

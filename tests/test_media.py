@@ -9,8 +9,41 @@ from gba_link import media
 from gba_link.native import Pair
 
 
+async def test_audio_pitch_survives_hardware_rate_changes(test_rom):
+    pair = Pair(test_rom, [None, None])
+    tracks = [media.Audio(pair, i) for i in range(2)]
+    try:
+        pair.pause(False)
+        for rate in (0, 1, 2, 3, 0):
+            for i in range(2):
+                pair.keys(i, (rate + i) % 4)
+            samples = [[], []]
+            for n in range(20):
+                frames = await asyncio.gather(*(track.recv() for track in tracks))
+                if n >= 10:
+                    for i, frame in enumerate(frames):
+                        samples[i].extend(
+                            memoryview(bytes(frame.planes[0])).cast("h")[::2]
+                        )
+            for waveform in samples:
+                edges = [
+                    i
+                    for i in range(1, len(waveform))
+                    if waveform[i - 1] < 5760 <= waveform[i]
+                ]
+                assert 23 <= len(edges) <= 28
+                periods = [b - a for a, b in zip(edges, edges[1:])]
+                assert pair.rate / statistics.median(periods) == pytest.approx(
+                    128, rel=0.02
+                )
+    finally:
+        for track in tracks:
+            track.stop()
+        pair.close()
+
+
 async def test_audio_pacing_does_not_accumulate_scheduler_delay(test_rom, monkeypatch):
-    interval = 655 / 32768
+    interval = 0.02
     now = 0.0
 
     async def sleep(delay):

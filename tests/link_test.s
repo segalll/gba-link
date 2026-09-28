@@ -31,6 +31,12 @@ start:
     strh r1, [r3]
 loop:
     ldrh r1, [r4]
+    @ A/B select the four hardware audio rates.
+    mvn r8, r1
+    and r8, r8, #3
+    mov r8, r8, lsl #14
+    orr r8, r8, #0x200
+    strh r8, [r0, #0x88]
     strh r1, [r2]
     strh r1, [r3, #2]
     mov r8, #6
