@@ -102,6 +102,15 @@ document.querySelector("#sound").addEventListener("click", async () => {
   await screen.play();
   screen.focus();
 });
+window.addEventListener("message", (event) => {
+  if (event.source !== window.parent || event.origin !== location.origin) return;
+  const { type, value } = event.data ?? {};
+  if (type === "setVolume" && Number.isFinite(value)) {
+    screen.volume = Math.max(0, Math.min(1, value));
+  } else if (type === "setMute" && typeof value === "boolean") {
+    screen.muted = value;
+  }
+});
 
 async function connect() {
   reconnect.hidden = true;
