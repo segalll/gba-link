@@ -15,18 +15,19 @@ class Video(MediaStreamTrack):
         super().__init__()
         self.pair, self.player = pair, player
         self.started = time.monotonic()
-        self.deadline = self.started
 
     async def recv(self):
-        await asyncio.sleep(max(0, self.deadline - time.monotonic()))
-        now = time.monotonic()
-        interval = 280896 / 16777216  # GBA cycles per frame / CPU frequency.
-        self.deadline += interval
-        if self.deadline < now:
-            self.deadline = now + interval
+        loop = asyncio.get_running_loop()
+        ready = asyncio.Event()
+        fd = self.pair.video_fds[self.player]
+        loop.add_reader(fd, ready.set)
+        try:
+            await ready.wait()
+        finally:
+            loop.remove_reader(fd)
         frame = av.VideoFrame(240, 160, "rgba")
         frame.planes[0].update(self.pair.video(self.player))
-        frame.pts = int((now - self.started) * 90000)
+        frame.pts = int((time.monotonic() - self.started) * 90000)
         frame.time_base = Fraction(1, 90000)
         return frame.reformat(format="yuv420p")
 

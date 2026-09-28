@@ -44,6 +44,16 @@ def test_link_transfers_each_players_input(pair):
     assert right[1] == (rgb555(0x3FD), rgb555(0x3FE), rgb555(0x3FD))
 
 
+def test_linked_cores_run_at_gba_speed(pair):
+    started = time.monotonic()
+    pair.pause(False)
+    time.sleep(0.6)
+    pair.pause(True)
+    elapsed = time.monotonic() - started
+    for player in range(2):
+        assert 45 < video(pair, player)[0] / elapsed < 75
+
+
 def test_pause_and_independent_battery_saves(pair, test_rom, tmp_path):
     pair.keys(0, 1)
     pair.keys(1, 2)

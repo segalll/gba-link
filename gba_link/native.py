@@ -15,6 +15,7 @@ class Pair:
             ("destroy", [ctypes.c_void_p], None),
             ("pause", [ctypes.c_void_p, ctypes.c_int], None),
             ("keys", [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint16], None),
+            ("video_fd", [ctypes.c_void_p, ctypes.c_int], ctypes.c_int),
             (
                 "video",
                 [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p],
@@ -40,6 +41,7 @@ class Pair:
         if not self.handle:
             raise ValueError("Could not load GBA ROM or battery saves")
         self.rate = self.lib.gba_link_audio_rate(self.handle, 0)
+        self.video_fds = [self.lib.gba_link_video_fd(self.handle, i) for i in range(2)]
 
     def close(self):
         with self.lock:

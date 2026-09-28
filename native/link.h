@@ -11,6 +11,8 @@ struct gba_link *gba_link_create(const char *rom, const char *save0, const char 
 void gba_link_destroy(struct gba_link *link);
 void gba_link_pause(struct gba_link *link, int paused);
 void gba_link_keys(struct gba_link *link, int player, uint16_t keys);
+int gba_link_video_fd(struct gba_link *link, int player);
+/* Reading video clears the frame notification. */
 uint64_t gba_link_video(struct gba_link *link, int player, void *rgba);
 size_t gba_link_audio(struct gba_link *link, int player, int16_t *stereo, size_t frames);
 unsigned gba_link_audio_rate(struct gba_link *link, int player);

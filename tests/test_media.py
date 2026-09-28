@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -6,13 +7,8 @@ from gba_link import media
 from gba_link.native import Pair
 
 
-@pytest.mark.parametrize(
-    "track_type, interval",
-    [(media.Video, 280896 / 16777216), (media.Audio, 655 / 32768)],
-)
-async def test_media_pacing_does_not_accumulate_scheduler_delay(
-    test_rom, monkeypatch, track_type, interval
-):
+async def test_audio_pacing_does_not_accumulate_scheduler_delay(test_rom, monkeypatch):
+    interval = 655 / 32768
     now = 0.0
 
     async def sleep(delay):
@@ -22,7 +18,7 @@ async def test_media_pacing_does_not_accumulate_scheduler_delay(
     monkeypatch.setattr(media, "time", SimpleNamespace(monotonic=lambda: now))
     monkeypatch.setattr(media, "asyncio", SimpleNamespace(sleep=sleep))
     pair = Pair(test_rom, [None, None])
-    track = track_type(pair, 0)
+    track = media.Audio(pair, 0)
     try:
         for _ in range(50):
             await track.recv()
@@ -34,5 +30,32 @@ async def test_media_pacing_does_not_accumulate_scheduler_delay(
         await track.recv()
         assert now - resumed == pytest.approx(interval, abs=0.002)
     finally:
+        track.stop()
+        pair.close()
+
+
+async def test_video_waits_for_new_frames_and_can_cancel_while_paused(test_rom):
+    pair = Pair(test_rom, [None, None])
+    track = media.Video(pair, 0)
+    pending = asyncio.create_task(track.recv())
+    try:
+        await asyncio.sleep(0.03)
+        assert not pending.done()
+        pair.pause(False)
+        frame = await asyncio.wait_for(pending, 1)
+        assert (frame.width, frame.height) == (240, 160)
+        pair.pause(True)
+        pair.video(0)
+        pending = asyncio.create_task(track.recv())
+        await asyncio.sleep(0.03)
+        assert not pending.done()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        pair.pause(False)
+        await asyncio.wait_for(track.recv(), 1)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
         track.stop()
         pair.close()

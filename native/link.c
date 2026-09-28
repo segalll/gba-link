@@ -11,7 +11,9 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <time.h>
+#include <unistd.h>
 
 #define PIXELS (240 * 160)
 #define AUDIO_FRAMES 2048
@@ -29,8 +31,10 @@ struct player {
     size_t audio_read;
     size_t audio_count;
     uint64_t frame;
+    int video_fd;
     int64_t deadline;
     unsigned audio_rate;
+    bool paced;
     bool attached;
 };
 
@@ -51,8 +55,10 @@ static void frame(struct mCoreThread *thread) {
     pthread_mutex_lock(&p->mutex);
     memcpy(p->video, p->render, sizeof(p->video));
     ++p->frame;
+    eventfd_write(p->video_fd, 1);
     pthread_mutex_unlock(&p->mutex);
-    /* Run at GBA speed even if the video stream falls behind. */
+    /* Lockstep keeps the other core in sync with this clock. */
+    if (!p->paced) return;
     int64_t now = now_ns();
     if (p->deadline < now - 16742706) {
         p->deadline = now;
@@ -94,10 +100,14 @@ struct gba_link *gba_link_create(const char *rom, const char *save0, const char 
     for (int i = 0; i < 2; ++i) {
         pthread_mutex_init(&link->players[i].mutex, NULL);
         atomic_init(&link->players[i].keys, 0);
+        link->players[i].video_fd = -1;
     }
     link->paused = true;
     for (int i = 0; i < 2; ++i) {
         struct player *p = &link->players[i];
+        p->paced = i == 0;
+        p->video_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (p->video_fd < 0) goto fail;
         struct mCore *core = mCoreFind(rom);
         if (!core) goto fail;
         if (core->platform(core) != mPLATFORM_GBA || !core->init(core)) {
@@ -166,6 +176,7 @@ void gba_link_destroy(struct gba_link *link) {
             p->thread.core->deinit(p->thread.core);
         }
         pthread_mutex_destroy(&p->mutex);
+        if (p->video_fd >= 0) close(p->video_fd);
     }
     GBASIOLockstepCoordinatorDeinit(&link->coordinator);
     free(link);
@@ -188,10 +199,16 @@ void gba_link_keys(struct gba_link *link, int player, uint16_t keys) {
     if (link && player >= 0 && player < 2) atomic_store(&link->players[player].keys, keys & 0x3ff);
 }
 
+int gba_link_video_fd(struct gba_link *link, int player) {
+    return link && player >= 0 && player < 2 ? link->players[player].video_fd : -1;
+}
+
 uint64_t gba_link_video(struct gba_link *link, int player, void *rgba) {
     if (!link || !rgba || player < 0 || player >= 2) return 0;
     struct player *p = &link->players[player];
     pthread_mutex_lock(&p->mutex);
+    eventfd_t pending;
+    eventfd_read(p->video_fd, &pending);
     uint32_t *pixels = rgba;
     for (size_t i = 0; i < PIXELS; ++i) pixels[i] = p->video[i] | 0xff000000;
     uint64_t count = p->frame;

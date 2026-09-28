@@ -129,14 +129,14 @@ class Service:
             self.seal()
         await self.checkpoint()
         seats, self.seats = self.seats, []
-        if self.pair:
-            await asyncio.to_thread(self.pair.close)
-            self.pair = None
         # Peer callbacks also take the service lock, which is held during close.
         for seat in seats:
             if seat.peer:
                 seat.peer.remove_all_listeners()
                 await seat.peer.close()
+        if self.pair:
+            await asyncio.to_thread(self.pair.close)
+            self.pair = None
         if self.session_id:
             shutil.rmtree(self.data / "sessions" / self.session_id)
         self.session_id = None
