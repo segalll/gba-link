@@ -379,6 +379,12 @@ async def offer(request):
             channel.close()
             return
 
+        @channel.on("close")
+        def closed():
+            if seat.peer is peer and seat in service.seats:
+                seat.ready = False
+                pair.keys(player, 0)
+
         @channel.on("message")
         def message(data):
             if seat.peer is not peer or seat not in service.seats:
@@ -435,7 +441,6 @@ async def lifetime(app):
             async with service.lock:
                 for i, seat in enumerate(service.seats):
                     if seat.ready and time.monotonic() - seat.last_input > 1:
-                        seat.ready = False
                         service.pair.keys(i, 0)
                 await service.readiness()
                 if time.monotonic() >= checkpoint_at:

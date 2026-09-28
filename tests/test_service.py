@@ -4,6 +4,7 @@ import io
 import zipfile
 from unittest.mock import patch
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from aiortc import (
     MediaStreamTrack,
@@ -220,15 +221,19 @@ async def test_roster_survives_service_restart(client, test_rom):
         assert response.status == 200
 
 
-async def test_two_peers_receive_video_audio_and_pause_on_disconnect(client, test_rom):
+@pytest.mark.parametrize("disconnect", ["peer", "channel"])
+async def test_two_peers_receive_video_audio_and_pause_on_disconnect(
+    client, test_rom, disconnect
+):
     first = await activate(client, test_rom)
     response = await client.post(
         f"{API}/join", json={"session_id": "a1b2", "user": {"id": 2}}, headers=AUTH
     )
     second = await response.json()
     peers, senders, tracks = [], [], []
+    keys = [0x1F, 0x3E0]
 
-    async def connect(room, keys):
+    async def connect(room, player):
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         peers.append(peer)
         media: dict[str, MediaStreamTrack] = {}
@@ -244,8 +249,8 @@ async def test_two_peers_receive_video_audio_and_pause_on_disconnect(client, tes
 
         async def inputs():
             while True:
-                if channel.readyState == "open":
-                    channel.send(keys.to_bytes(2, "little"))
+                if channel.readyState == "open" and keys[player] is not None:
+                    channel.send(keys[player].to_bytes(2, "little"))
                 await asyncio.sleep(0.05)
 
         senders.append(asyncio.create_task(inputs()))
@@ -257,10 +262,11 @@ async def test_two_peers_receive_video_audio_and_pause_on_disconnect(client, tes
         )
         assert response.status == 200
         await peer.setRemoteDescription(RTCSessionDescription(**await response.json()))
+        return channel
 
     try:
-        await connect(first, 0x1F)
-        await connect(second, 0x3E0)
+        await connect(first, 0)
+        second_channel = await connect(second, 1)
         # Keep reading so assertions use the latest frames.
         latest: list[dict[str, AudioFrame | VideoFrame]] = [{}, {}]
         changed = asyncio.Event()
@@ -304,8 +310,24 @@ async def test_two_peers_receive_video_audio_and_pause_on_disconnect(client, tes
             service = client.server.app[SERVICE]
             assert service.pair.save(0)[0] == 0xE0
             assert service.pair.save(1)[0] == 0x1F
-            await peers[1].close()
+            keys[1] = None
+            await asyncio.sleep(1.5)
+            before = [frames["video"].pts for frames in latest]
+            keys[0] = 1
+            await asyncio.sleep(0.2)
+            assert all(frames["video"].pts > pts for frames, pts in zip(latest, before))
+            assert service.pair.save(0)[0] == 0xFE
+            assert service.pair.save(1)[0] == 0xFF
+            keys[1] = 0x3E0
+            await asyncio.sleep(0.2)
+            assert service.pair.save(1)[0] == 0x1F
+            if disconnect == "peer":
+                await peers[1].close()
+            else:
+                second_channel.close()
             await asyncio.sleep(1.25)
+            if disconnect == "channel":
+                assert peers[1].connectionState == "connected"
             assert not service.seats[1].ready
             before = service.pair.video(0)
             service.pair.keys(0, 0)
