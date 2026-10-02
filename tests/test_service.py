@@ -14,7 +14,7 @@ from aiortc import (
 )
 from av import AudioFrame, VideoFrame
 
-from gba_link.native import Pair
+from gba_link.native import Link
 from gba_link.server import SERVICE, create_app
 
 AUTH = {"X-Broker-Secret": "test-secret"}
@@ -38,6 +38,7 @@ async def activate(client, test_rom):
     return await response.json()
 
 
+@pytest.mark.parametrize("client", [2, 3, 4], indirect=True)
 async def test_auth_seats_and_stale_join(client, test_rom):
     assert (
         await client.post(f"{API}/activate", json=activation(test_rom))
@@ -47,13 +48,23 @@ async def test_auth_seats_and_stale_join(client, test_rom):
     payload = {"session_id": "old", "user": {"id": 2}}
     assert (await client.post(f"{API}/join", json=payload, headers=AUTH)).status == 409
     payload["session_id"] = "a1b2"
-    second = await client.post(f"{API}/join", json=payload, headers=AUTH)
-    assert second.status == 200
-    room = await second.json()
-    assert room["url"] != first["url"]
+    count = client.server.app[SERVICE].player_count
+    token = {"Authorization": "Bearer " + first["url"].split("token=")[1]}
+    for uid in range(2, count + 1):
+        context = await client.get("/gba-link/context", headers=token)
+        assert (await context.json())["waiting"]
+        response = await client.post("/gba-link/offer", json={}, headers=token)
+        assert response.status == 409
+        payload["user"] = {"id": uid}
+        response = await client.post(f"{API}/join", json=payload, headers=AUTH)
+        assert response.status == 200
+        room = await response.json()
+        assert room["url"] != first["url"]
+    context = await client.get("/gba-link/context", headers=token)
+    assert not (await context.json())["waiting"]
     again = await client.post(f"{API}/join", json=payload, headers=AUTH)
     assert (await again.json()) == room
-    payload["user"] = {"id": 3}
+    payload["user"] = {"id": count + 1}
     assert (await client.post(f"{API}/join", json=payload, headers=AUTH)).status == 409
     assert (await client.get("/gba-link/context")).status == 401
 
@@ -65,6 +76,7 @@ def archive(name="game.sav", content=b"\x42" * 32768):
     return buffer.getvalue()
 
 
+@pytest.mark.parametrize("client", [2, 4], indirect=True)
 async def test_separate_saves_survive_exit_and_new_session(client, test_rom):
     async def upload(content):
         response = await client.put(
@@ -73,16 +85,22 @@ async def test_separate_saves_survive_exit_and_new_session(client, test_rom):
         assert response.status == 200
         return (await response.json())["path"]
 
-    left = await upload(archive(content=b"\x11" * 32768))
-    right = await upload(archive(content=b"\x22" * 32768))
-    assert left != right
-    payload = activation(test_rom)
-    payload["save"] = {"archive": left}
-    assert (
-        await client.post(f"{API}/activate", json=payload, headers=AUTH)
-    ).status == 200
-    payload = {"session_id": "a1b2", "user": {"id": 2}, "save": {"archive": right}}
-    assert (await client.post(f"{API}/join", json=payload, headers=AUTH)).status == 200
+    count = client.server.app[SERVICE].player_count
+    for uid in range(1, count + 1):
+        save = await upload(archive(content=bytes([uid * 0x11]) * 32768))
+        payload = {
+            **activation(test_rom),
+            "user": {"id": uid},
+            "save": {"archive": save},
+        }
+        action = "activate" if uid == 1 else "join"
+        assert (
+            await client.post(f"{API}/{action}", json=payload, headers=AUTH)
+        ).status == 200
+    response = await client.post(
+        f"{API}/seal", json={"session_id": "a1b2"}, headers=AUTH
+    )
+    assert (await response.json()) == {"players": list(range(1, count + 1))}
     assert (
         await client.post(f"{API}/exit", json={"session_id": "a1b2"}, headers=AUTH)
     ).status == 200
@@ -90,12 +108,12 @@ async def test_separate_saves_survive_exit_and_new_session(client, test_rom):
     assert (
         await client.post(f"{API}/activate", json=payload, headers=AUTH)
     ).status == 200
-    for user_id, byte in ((1, 0x11), (2, 0x22)):
+    for user_id in range(1, count + 1):
         path = f"{API}/exports/a1b2-{user_id}.zip"
         response = await client.get(path, headers=AUTH)
         assert response.status == 200
         with zipfile.ZipFile(io.BytesIO(await response.read())) as zipped:
-            assert zipped.read("game.sav") == bytes([byte]) * 32768
+            assert zipped.read("game.sav") == bytes([user_id * 0x11]) * 32768
         assert (await client.get(path, headers=AUTH)).status == 200
         assert (await client.delete(path, headers=AUTH)).status == 200
         assert (await client.get(path, headers=AUTH)).status == 404
@@ -132,28 +150,36 @@ async def test_seal_prevents_join_racing_exit(client, test_rom):
     assert (await response.json()) == {"players": [1]}
 
 
-async def test_failed_join_closes_pair_and_leaves_second_seat_available(
-    client, test_rom
-):
+@pytest.mark.parametrize(
+    "client, joining", [(2, 2), (4, 2), (4, 4)], indirect=["client"]
+)
+async def test_failed_join_leaves_seat_available(client, test_rom, joining):
     await activate(client, test_rom)
     service = client.server.app[SERVICE]
-    payload = {"session_id": "a1b2", "user": {"id": 2}}
+    for uid in range(2, joining):
+        response = await client.post(
+            f"{API}/join",
+            json={"session_id": "a1b2", "user": {"id": uid}},
+            headers=AUTH,
+        )
+        assert response.status == 200
+    payload = {"session_id": "a1b2", "user": {"id": joining}}
     with (
         patch.object(service, "write_roster", side_effect=OSError("disk full")),
-        patch.object(Pair, "close", autospec=True, side_effect=Pair.close) as close,
+        patch.object(Link, "close", autospec=True, side_effect=Link.close) as close,
     ):
         response = await client.post(f"{API}/join", json=payload, headers=AUTH)
         assert response.status == 500
-        assert service.pair is None
-        assert [seat.user_id for seat in service.seats] == [1]
-        close.assert_called_once()
+        assert service.link is None
+        assert [seat.user_id for seat in service.seats] == list(range(1, joining))
+        assert close.call_count == (joining == service.player_count)
 
     response = await client.post(f"{API}/join", json=payload, headers=AUTH)
     assert response.status == 200
     response = await client.post(
         f"{API}/seal", json={"session_id": "a1b2"}, headers=AUTH
     )
-    assert (await response.json()) == {"players": [1, 2]}
+    assert (await response.json()) == {"players": list(range(1, joining + 1))}
 
 
 async def test_old_exit_cannot_stop_a_replacement_room(client, test_rom):
@@ -221,17 +247,27 @@ async def test_roster_survives_service_restart(client, test_rom):
         assert response.status == 200
 
 
-@pytest.mark.parametrize("disconnect", ["peer", "channel"])
-async def test_two_peers_receive_video_audio_and_pause_on_disconnect(
+@pytest.mark.parametrize(
+    "client, disconnect",
+    [(2, "peer"), (2, "channel"), (4, "peer"), (4, "channel")],
+    indirect=["client"],
+)
+async def test_peers_receive_video_audio_and_pause_on_disconnect(
     client, test_rom, disconnect
 ):
-    first = await activate(client, test_rom)
-    response = await client.post(
-        f"{API}/join", json={"session_id": "a1b2", "user": {"id": 2}}, headers=AUTH
-    )
-    second = await response.json()
+    count = client.server.app[SERVICE].player_count
+    rooms = [await activate(client, test_rom)]
+    for uid in range(2, count + 1):
+        response = await client.post(
+            f"{API}/join",
+            json={"session_id": "a1b2", "user": {"id": uid}},
+            headers=AUTH,
+        )
+        assert response.status == 200
+        rooms.append(await response.json())
     peers, senders, tracks = [], [], []
-    keys = [0x1F, 0x3E0]
+    keys = [0x1F, 0x3E0, 0x155, 0x2AA][:count]
+    expected = [0xE0, 0x1F, 0xAA, 0x55][:count]
 
     async def connect(room, player):
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
@@ -265,10 +301,10 @@ async def test_two_peers_receive_video_audio_and_pause_on_disconnect(
         return channel
 
     try:
-        await connect(first, 0)
-        second_channel = await connect(second, 1)
+        for i, room in enumerate(rooms):
+            last_channel = await connect(room, i)
         # Keep reading so assertions use the latest frames.
-        latest: list[dict[str, AudioFrame | VideoFrame]] = [{}, {}]
+        latest: list[dict[str, AudioFrame | VideoFrame]] = [{} for _ in rooms]
         changed = asyncio.Event()
 
         async def receive(i, kind):
@@ -280,7 +316,7 @@ async def test_two_peers_receive_video_audio_and_pause_on_disconnect(
 
         receivers = [
             asyncio.create_task(receive(i, kind))
-            for i in range(2)
+            for i in range(count)
             for kind in ("audio", "video")
         ]
         try:
@@ -308,31 +344,30 @@ async def test_two_peers_receive_video_audio_and_pause_on_disconnect(
             colors = [bytes(f["video"].planes[0])[20:120] for f in latest]
             assert abs(sum(colors[0]) - sum(colors[1])) > 1000
             service = client.server.app[SERVICE]
-            assert service.pair.save(0)[0] == 0xE0
-            assert service.pair.save(1)[0] == 0x1F
-            keys[1] = None
+            assert [service.link.save(i)[0] for i in range(count)] == expected
+            last_keys, keys[-1] = keys[-1], None
             await asyncio.sleep(1.5)
             before = [frames["video"].pts for frames in latest]
             keys[0] = 1
             await asyncio.sleep(0.2)
             assert all(frames["video"].pts > pts for frames, pts in zip(latest, before))
-            assert service.pair.save(0)[0] == 0xFE
-            assert service.pair.save(1)[0] == 0xFF
-            keys[1] = 0x3E0
+            assert service.link.save(0)[0] == 0xFE
+            assert service.link.save(count - 1)[0] == 0xFF
+            keys[-1] = last_keys
             await asyncio.sleep(0.2)
-            assert service.pair.save(1)[0] == 0x1F
+            assert service.link.save(count - 1)[0] == expected[-1]
             if disconnect == "peer":
-                await peers[1].close()
+                await peers[-1].close()
             else:
-                second_channel.close()
+                last_channel.close()
             await asyncio.sleep(1.25)
             if disconnect == "channel":
-                assert peers[1].connectionState == "connected"
-            assert not service.seats[1].ready
-            before = service.pair.video(0)
-            service.pair.keys(0, 0)
+                assert peers[-1].connectionState == "connected"
+            assert not service.seats[-1].ready
+            before = service.link.video(0)
+            service.link.keys(0, 0)
             await asyncio.sleep(0.1)
-            assert service.pair.video(0) == before
+            assert service.link.video(0) == before
         finally:
             for task in receivers:
                 task.cancel()

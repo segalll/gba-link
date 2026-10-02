@@ -41,7 +41,8 @@ struct player {
 
 struct gba_link {
     struct GBASIOLockstepCoordinator coordinator;
-    struct player players[2];
+    struct player players[MAX_GBAS];
+    int player_count;
     bool paused;
 };
 
@@ -59,7 +60,7 @@ static void frame(struct mCoreThread *thread) {
     eventfd_write(p->video_fd, 1);
     pthread_mutex_unlock(&p->mutex);
     if (!p->paced) return;
-    /* Advance the link clock so the other core can finish its frame before we sleep. */
+    /* Advance the link clock so the other cores can finish their frames before we sleep. */
     struct mTimingEvent *sync = &p->driver.event;
     mTimingDeschedule(thread->core->timing, sync);
     sync->callback(thread->core->timing, sync->context, 0);
@@ -91,13 +92,13 @@ static void audio(struct mAVStream *stream, struct mAudioBuffer *buffer) {
     pthread_mutex_unlock(&p->mutex);
 }
 
-struct gba_link *gba_link_create(const char *rom, const char *save0, const char *save1) {
-    if (!rom) return NULL;
+struct gba_link *gba_link_create(const char *rom, const char *const *saves, int player_count) {
+    if (!rom || !saves || player_count < 2 || player_count > MAX_GBAS) return NULL;
     struct gba_link *link = calloc(1, sizeof(*link));
     if (!link) return NULL;
-    const char *saves[2] = {save0, save1};
+    link->player_count = player_count;
     GBASIOLockstepCoordinatorInit(&link->coordinator);
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         struct player *p = &link->players[i];
         pthread_mutex_init(&p->mutex, NULL);
         atomic_init(&p->keys, 0);
@@ -107,7 +108,7 @@ struct gba_link *gba_link_create(const char *rom, const char *save0, const char 
         mAudioResamplerSetDestination(&p->resampler, &p->audio, AUDIO_RATE);
     }
     link->paused = true;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         struct player *p = &link->players[i];
         p->paced = i == 0;
         p->video_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -140,7 +141,7 @@ struct gba_link *gba_link_create(const char *rom, const char *save0, const char 
         if (!mCoreThreadStart(&p->thread)) goto fail;
         mCoreThreadPause(&p->thread);
     }
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         struct player *p = &link->players[i];
         mLockstepThreadUserInit(&p->user, &p->thread);
         GBASIOLockstepDriverCreate(&p->driver, &p->user.d);
@@ -156,23 +157,23 @@ fail:
 
 void gba_link_destroy(struct gba_link *link) {
     if (!link) return;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         if (link->players[i].thread.impl) mCoreThreadPause(&link->players[i].thread);
     }
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         struct player *p = &link->players[i];
         if (p->attached) {
             p->thread.core->setPeripheral(p->thread.core, mPERIPH_GBA_LINK_PORT, NULL);
             GBASIOLockstepCoordinatorDetach(&link->coordinator, &p->driver);
         }
     }
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         if (link->players[i].thread.impl) mCoreThreadEnd(&link->players[i].thread);
     }
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         if (link->players[i].thread.impl) mCoreThreadJoin(&link->players[i].thread);
     }
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         struct player *p = &link->players[i];
         if (p->thread.core) {
             mCoreConfigDeinit(&p->thread.core->config);
@@ -189,7 +190,7 @@ void gba_link_destroy(struct gba_link *link) {
 
 void gba_link_pause(struct gba_link *link, int paused) {
     if (!link || link->paused == !!paused) return;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < link->player_count; ++i) {
         struct player *p = &link->players[i];
         if (paused) mCoreThreadPause(&p->thread);
         else {
@@ -201,15 +202,15 @@ void gba_link_pause(struct gba_link *link, int paused) {
 }
 
 void gba_link_keys(struct gba_link *link, int player, uint16_t keys) {
-    if (link && player >= 0 && player < 2) atomic_store(&link->players[player].keys, keys & 0x3ff);
+    if (link && player >= 0 && player < link->player_count) atomic_store(&link->players[player].keys, keys & 0x3ff);
 }
 
 int gba_link_video_fd(struct gba_link *link, int player) {
-    return link && player >= 0 && player < 2 ? link->players[player].video_fd : -1;
+    return link && player >= 0 && player < link->player_count ? link->players[player].video_fd : -1;
 }
 
 uint64_t gba_link_video(struct gba_link *link, int player, void *rgba) {
-    if (!link || !rgba || player < 0 || player >= 2) return 0;
+    if (!link || !rgba || player < 0 || player >= link->player_count) return 0;
     struct player *p = &link->players[player];
     pthread_mutex_lock(&p->mutex);
     eventfd_t pending;
@@ -222,7 +223,7 @@ uint64_t gba_link_video(struct gba_link *link, int player, void *rgba) {
 }
 
 size_t gba_link_audio(struct gba_link *link, int player, int16_t *stereo, size_t frames) {
-    if (!link || !stereo || player < 0 || player >= 2) return 0;
+    if (!link || !stereo || player < 0 || player >= link->player_count) return 0;
     struct player *p = &link->players[player];
     pthread_mutex_lock(&p->mutex);
     size_t count = mAudioBufferRead(&p->audio, stereo, frames);
@@ -231,11 +232,11 @@ size_t gba_link_audio(struct gba_link *link, int player, int16_t *stereo, size_t
 }
 
 unsigned gba_link_audio_rate(struct gba_link *link, int player) {
-    return link && player >= 0 && player < 2 ? AUDIO_RATE : 0;
+    return link && player >= 0 && player < link->player_count ? AUDIO_RATE : 0;
 }
 
 size_t gba_link_save(struct gba_link *link, int player, void *data, size_t capacity) {
-    if (!link || !data || player < 0 || player >= 2) return 0;
+    if (!link || !data || player < 0 || player >= link->player_count) return 0;
     struct player *p = &link->players[player];
     mCoreThreadInterrupt(&p->thread);
     void *save = NULL;

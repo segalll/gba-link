@@ -7,7 +7,7 @@
 struct gba_link;
 
 /* Control operations must be serialized; input and media reads are thread safe. */
-struct gba_link *gba_link_create(const char *rom, const char *save0, const char *save1);
+struct gba_link *gba_link_create(const char *rom, const char *const *saves, int player_count);
 void gba_link_destroy(struct gba_link *link);
 void gba_link_pause(struct gba_link *link, int paused);
 void gba_link_keys(struct gba_link *link, int player, uint16_t keys);

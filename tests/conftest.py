@@ -35,7 +35,12 @@ def test_rom(tmp_path_factory):
 
 
 @pytest.fixture
-async def client(tmp_path, test_rom):
-    app = create_app(tmp_path / "data", test_rom.parent, "test-secret")
+async def client(tmp_path, test_rom, request):
+    app = create_app(
+        tmp_path / "data",
+        test_rom.parent,
+        "test-secret",
+        player_count=getattr(request, "param", 2),
+    )
     async with TestClient(TestServer(app)) as client:
         yield client

@@ -124,7 +124,7 @@ async function connect() {
     do {
       context = await api("context");
       status.textContent = context.waiting
-        ? "Waiting for player two to join from RomM..."
+        ? "Waiting for all players to join from RomM..."
         : "Connecting...";
       if (context.waiting)
         await new Promise((resolve) => setTimeout(resolve, 1500));

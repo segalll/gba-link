@@ -7,6 +7,7 @@ services:
       BROKER_SECRET: ${GBA_LINK_BROKER_SECRET:?Set a shared broker secret}
       BIND_HOST: 127.0.0.1
       PORT: 8080
+      PLAYER_COUNT: ${GBA_LINK_PLAYER_COUNT:-2}
       ICE_SERVERS: ${GBA_LINK_ICE_SERVERS:-[]}
     volumes:
       - ${ROMM_LIBRARY:?Set the RomM library directory}:/roms:ro

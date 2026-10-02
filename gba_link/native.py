@@ -4,14 +4,18 @@ import threading
 from pathlib import Path
 
 
-class Pair:
+class Link:
     def __init__(self, rom: Path, saves: list[Path | None]):
         self.lock = threading.Lock()
         self.lib = ctypes.CDLL(
             os.environ.get("GBA_LINK_LIBRARY", "build/libgba_link.so")
         )
         for name, args, result in (
-            ("create", [ctypes.c_char_p] * 3, ctypes.c_void_p),
+            (
+                "create",
+                [ctypes.c_char_p, ctypes.POINTER(ctypes.c_char_p), ctypes.c_int],
+                ctypes.c_void_p,
+            ),
             ("destroy", [ctypes.c_void_p], None),
             ("pause", [ctypes.c_void_p, ctypes.c_int], None),
             ("keys", [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint16], None),
@@ -36,12 +40,18 @@ class Pair:
             function = getattr(self.lib, f"gba_link_{name}")
             function.argtypes, function.restype = args, result
         self.handle = self.lib.gba_link_create(
-            os.fsencode(rom), *(os.fsencode(p) if p else None for p in saves)
+            os.fsencode(rom),
+            (ctypes.c_char_p * len(saves))(
+                *(os.fsencode(p) if p else None for p in saves)
+            ),
+            len(saves),
         )
         if not self.handle:
             raise ValueError("Could not load GBA ROM or battery saves")
         self.rate = self.lib.gba_link_audio_rate(self.handle, 0)
-        self.video_fds = [self.lib.gba_link_video_fd(self.handle, i) for i in range(2)]
+        self.video_fds = [
+            self.lib.gba_link_video_fd(self.handle, i) for i in range(len(saves))
+        ]
 
     def close(self):
         with self.lock:

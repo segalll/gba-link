@@ -39,7 +39,7 @@ loop:
     strh r8, [r0, #0x88]
     strh r1, [r2]
     strh r1, [r3, #2]
-    mov r8, #6
+    mov r8, #10
 paint:
     strh r1, [r2, r8]
     add r8, r8, #2
@@ -54,6 +54,10 @@ paint:
     strh r1, [r2, #2]
     ldrh r1, [r5, #2]
     strh r1, [r2, #4]
+    ldrh r1, [r5, #4]
+    strh r1, [r2, #6]
+    ldrh r1, [r5, #6]
+    strh r1, [r2, #8]
     ldrh r1, [r3]
     tst r1, #4
     bne loop

@@ -23,7 +23,7 @@ from aiortc import (
 )
 
 from .media import Audio, Video
-from .native import Pair
+from .native import Link
 
 PREFIX = "/gba-link"
 API = f"{PREFIX}/api/session"
@@ -43,14 +43,24 @@ class Seat:
 
 
 class Service:
-    def __init__(self, data: Path, roms: Path, secret: str, ice_servers: list[dict]):
+    def __init__(
+        self,
+        data: Path,
+        roms: Path,
+        secret: str,
+        ice_servers: list[dict],
+        player_count: int,
+    ):
         if not secret:
             raise ValueError("BROKER_SECRET is required")
+        if player_count not in (2, 3, 4):
+            raise ValueError("PLAYER_COUNT must be 2, 3, or 4")
         self.data, self.roms, self.secret = data, roms.resolve(), secret
         self.ice_servers = ice_servers
+        self.player_count = player_count
         self.lock = asyncio.Lock()
         self.seats: list[Seat] = []
-        self.pair: Pair | None = None
+        self.link: Link | None = None
         self.session_id: str | None = None
         self.rom: Path | None = None
         self.sealed = False
@@ -97,22 +107,22 @@ class Service:
         return players
 
     async def readiness(self):
-        if self.pair:
+        if self.link:
             ready = not self.sealed and all(
                 s.ready and s.peer and s.peer.connectionState == "connected"
                 for s in self.seats
             )
-            await asyncio.to_thread(self.pair.pause, not ready)
+            await asyncio.to_thread(self.link.pause, not ready)
 
     async def checkpoint(self):
         snapshots = []
-        if self.pair:
-            await asyncio.to_thread(self.pair.pause, True)
+        if self.link:
+            await asyncio.to_thread(self.link.pause, True)
         try:
             for i, seat in enumerate(self.seats):
                 content = (
-                    await asyncio.to_thread(self.pair.save, i)
-                    if self.pair
+                    await asyncio.to_thread(self.link.save, i)
+                    if self.link
                     else (seat.save.read_bytes() if seat.save else b"")
                 )
                 if not content:
@@ -134,9 +144,9 @@ class Service:
             if seat.peer:
                 seat.peer.remove_all_listeners()
                 await seat.peer.close()
-        if self.pair:
-            await asyncio.to_thread(self.pair.close)
-            self.pair = None
+        if self.link:
+            await asyncio.to_thread(self.link.close)
+            self.link = None
         if self.session_id:
             shutil.rmtree(self.data / "sessions" / self.session_id)
         self.session_id = None
@@ -246,21 +256,21 @@ async def join(request):
         for seat in service.seats:
             if seat.user_id == uid:
                 return web.json_response(service.url(seat))
-        if len(service.seats) == 2:
-            raise web.HTTPConflict(text="Both seats are taken")
+        if len(service.seats) == service.player_count:
+            raise web.HTTPConflict(text="The room is full")
         seat = Seat(uid, service.import_save(payload, uid))
-        pair = await asyncio.to_thread(
-            Pair, service.rom, [service.seats[0].save, seat.save]
-        )
+        seats = service.seats + [seat]
+        link = None
+        if len(seats) == service.player_count:
+            link = await asyncio.to_thread(Link, service.rom, [s.save for s in seats])
         try:
-            await asyncio.to_thread(
-                service.write_roster, [s.user_id for s in service.seats] + [uid]
-            )
+            await asyncio.to_thread(service.write_roster, [s.user_id for s in seats])
         except Exception:
-            await asyncio.to_thread(pair.close)
+            if link:
+                await asyncio.to_thread(link.close)
             raise
-        service.seats.append(seat)
-        service.pair = pair
+        service.seats = seats
+        service.link = link
         return web.json_response(service.url(seat))
 
 
@@ -336,7 +346,7 @@ async def context(request):
     return web.json_response(
         {
             "player": player + 1,
-            "waiting": len(service.seats) < 2,
+            "waiting": len(service.seats) < service.player_count,
             "iceServers": service.ice_servers,
         }
     )
@@ -347,14 +357,14 @@ async def offer(request):
     payload = await request.json()
     async with service.lock:
         player, seat = service.authenticate(request)
-        if not service.pair:
-            raise web.HTTPConflict(text="Waiting for player two")
-        pair = service.pair
+        if not service.link:
+            raise web.HTTPConflict(text="Waiting for all players")
+        link = service.link
         if seat.peer:
             seat.peer.remove_all_listeners()
             await seat.peer.close()
         seat.ready = False
-        service.pair.keys(player, 0)
+        service.link.keys(player, 0)
         peer = RTCPeerConnection(
             RTCConfiguration(
                 iceServers=[RTCIceServer(**item) for item in service.ice_servers]
@@ -370,7 +380,7 @@ async def offer(request):
                 return
             if peer.connectionState != "connected":
                 seat.ready = False
-                pair.keys(player, 0)
+                link.keys(player, 0)
             await service.readiness()
 
     @peer.on("datachannel")
@@ -383,7 +393,7 @@ async def offer(request):
         def closed():
             if seat.peer is peer and seat in service.seats:
                 seat.ready = False
-                pair.keys(player, 0)
+                link.keys(player, 0)
 
         @channel.on("message")
         def message(data):
@@ -396,15 +406,15 @@ async def offer(request):
                 return
             seat.last_input = time.monotonic()
             seat.ready = True
-            pair.keys(player, mask)
+            link.keys(player, mask)
 
     try:
-        video = peer.addTransceiver(Video(pair, player), direction="sendonly")
+        video = peer.addTransceiver(Video(link, player), direction="sendonly")
         codecs = RTCRtpSender.getCapabilities("video").codecs
         video.setCodecPreferences(
             sorted(codecs, key=lambda codec: codec.mimeType != "video/H264")
         )
-        peer.addTrack(Audio(pair, player))
+        peer.addTrack(Audio(link, player))
         await peer.setRemoteDescription(
             RTCSessionDescription(sdp=payload["sdp"], type="offer")
         )
@@ -416,7 +426,7 @@ async def offer(request):
             if seat.peer is peer:
                 seat.peer = None
                 seat.ready = False
-                pair.keys(player, 0)
+                link.keys(player, 0)
                 await service.readiness()
         raise
     return web.json_response(
@@ -441,7 +451,7 @@ async def lifetime(app):
             async with service.lock:
                 for i, seat in enumerate(service.seats):
                     if seat.ready and time.monotonic() - seat.last_input > 1:
-                        service.pair.keys(i, 0)
+                        service.link.keys(i, 0)
                 await service.readiness()
                 if time.monotonic() >= checkpoint_at:
                     try:
@@ -460,10 +470,14 @@ async def lifetime(app):
 
 
 def create_app(
-    data: Path, roms: Path, secret: str, ice_servers: list[dict] | None = None
+    data: Path,
+    roms: Path,
+    secret: str,
+    ice_servers: list[dict] | None = None,
+    player_count: int = 2,
 ):
     app = web.Application(middlewares=[security], client_max_size=MAX_SAVE + 4096)
-    app[SERVICE] = Service(data, roms, secret, ice_servers or [])
+    app[SERVICE] = Service(data, roms, secret, ice_servers or [], player_count)
     app.cleanup_ctx.append(lifetime)
     app.add_routes(
         [
@@ -490,6 +504,7 @@ if __name__ == "__main__":
             Path(os.environ.get("ROM_ROOT", "/roms")),
             os.environ["BROKER_SECRET"],
             json.loads(os.environ.get("ICE_SERVERS", "[]")),
+            int(os.environ.get("PLAYER_COUNT", "2")),
         ),
         # Bridged containers need all interfaces; host-network Compose uses loopback.
         host=os.environ.get("BIND_HOST", "0.0.0.0"),  # nosec B104

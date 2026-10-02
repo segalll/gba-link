@@ -1,6 +1,6 @@
 # GBA Link Play
 
-Play GBA link multiplayer through RomM in two browsers. Both mGBA instances
+Play GBA link multiplayer through RomM in two to four browsers. All mGBA instances
 run on the server. Requires Linux and a RomM build with `per_player_saves` support.
 
 ```sh
@@ -54,12 +54,16 @@ STUN/TURN configuration before starting the service:
 export GBA_LINK_ICE_SERVERS='[{"urls":"stun:turn.example:3478"},{"urls":"turn:turn.example:3478","username":"gba-link","credential":"replace-me"}]'
 ```
 
-Open an uncompressed `.gba` ROM in RomM and choose GBA Link Play. The second
-player joins through RomM. The game starts when both browsers are connected
-and pauses if either player disconnects.
+Set `PLAYER_COUNT` to `2`, `3`, or `4` in the service environment (default: `2`).
+With the included Compose file, set `GBA_LINK_PLAYER_COUNT` instead. All players
+must join before the game starts; changing the count requires restarting the service.
+
+Open an uncompressed `.gba` ROM in RomM and choose GBA Link Play. The other
+players join through RomM. The game starts when all browsers are connected
+and pauses if a player disconnects.
 
 Save in-game before ending the room. Each player's save is stored separately.
 To import a save, upload a ZIP containing `game.sav` and tag it `mgba-link`.
 
-Each service runs one room for two players using the same ROM. Save states
+Each service runs one room using the same ROM for all players. Save states
 are not supported.
