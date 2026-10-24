@@ -12,6 +12,7 @@ from aiortc import (
     RTCPeerConnection,
     RTCSessionDescription,
 )
+from aiortc.sdp import SessionDescription
 from av import AudioFrame, VideoFrame
 
 from gba_link.native import Link
@@ -297,7 +298,27 @@ async def test_peers_receive_video_audio_and_pause_on_disconnect(
             headers={"Authorization": "Bearer " + room["url"].split("token=")[1]},
         )
         assert response.status == 200
-        await peer.setRemoteDescription(RTCSessionDescription(**await response.json()))
+        answer = await response.json()
+        for section in SessionDescription.parse(answer["sdp"]).media:
+            hosts = [
+                c
+                for c in section.ice_candidates
+                if c.type == "host" and ":" not in c.ip
+            ]
+            for host in hosts:
+                forwarded = [
+                    c
+                    for c in section.ice_candidates
+                    if c.type == "srflx"
+                    and c.relatedAddress == host.ip
+                    and c.relatedPort == host.port
+                ]
+                assert {c.ip for c in forwarded} == {"203.0.113.10", "192.0.2.10"}
+                assert all(
+                    c.port == host.port and c.priority < host.priority
+                    for c in forwarded
+                )
+        await peer.setRemoteDescription(RTCSessionDescription(**answer))
         return channel
 
     try:

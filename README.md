@@ -6,6 +6,7 @@ run on the server. Requires Linux and a RomM build with `per_player_saves` suppo
 ```sh
 export ROMM_LIBRARY=/absolute/path/to/romm/library
 export GBA_LINK_BROKER_SECRET='a-long-random-shared-secret'
+export GBA_LINK_ADVERTISE_IPS='YOUR_PUBLIC_IP,YOUR_SERVER_LAN_IP'
 docker compose up --build -d
 ```
 
@@ -22,6 +23,9 @@ romm.example.com {
     }
 }
 ```
+
+For Caddy in Docker, connect it to gba-link's network and use
+`reverse_proxy gba-link:8080` for `/gba-link/*`.
 
 Add this to RomM's `config.yml`, using the same broker secret:
 
@@ -47,12 +51,14 @@ streaming:
 
 If `STREAMING_BROKER_SECRET` is set in RomM, use that value for both services.
 
-Internet play needs WebRTC UDP connectivity in addition to Caddy. Set your
-STUN/TURN configuration before starting the service:
+Forward **UDP 50000–50031** on your router to the same ports on the Docker host.
+Compose publishes those ports and restricts the container's automatic port
+allocation to that range. Caddy handles HTTP; media and controls use UDP directly.
 
-```sh
-export GBA_LINK_ICE_SERVERS='[{"urls":"stun:turn.example:3478"},{"urls":"turn:turn.example:3478","username":"gba-link","credential":"replace-me"}]'
-```
+`ADVERTISE_IPS` is a comma-separated list of the server's reachable IP addresses.
+Include its public IP for remote players and its LAN IP for local players.
+Use IP addresses, not domain names. Update this setting and recreate the container
+if your public IP changes. TURN and STUN servers are not required with this setup.
 
 Set `PLAYER_COUNT` to `2`, `3`, or `4` in the service environment (default: `2`).
 With the included Compose file, set `GBA_LINK_PLAYER_COUNT` instead. All players

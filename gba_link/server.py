@@ -11,6 +11,7 @@ import shutil
 import time
 import zipfile
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from pathlib import Path
 
 from aiohttp import web
@@ -22,6 +23,7 @@ from aiortc import (
     RTCSessionDescription,
 )
 
+from .ice import add_forwarded_candidates
 from .media import Audio, Video
 from .native import Link
 
@@ -50,6 +52,7 @@ class Service:
         secret: str,
         ice_servers: list[dict],
         player_count: int,
+        advertise_ips: list[str],
     ):
         if not secret:
             raise ValueError("BROKER_SECRET is required")
@@ -57,6 +60,7 @@ class Service:
             raise ValueError("PLAYER_COUNT must be 2, 3, or 4")
         self.data, self.roms, self.secret = data, roms.resolve(), secret
         self.ice_servers = ice_servers
+        self.advertise_ips = [str(ip_address(ip)) for ip in advertise_ips]
         self.player_count = player_count
         self.lock = asyncio.Lock()
         self.seats: list[Seat] = []
@@ -419,6 +423,9 @@ async def offer(request):
             RTCSessionDescription(sdp=payload["sdp"], type="offer")
         )
         await peer.setLocalDescription(await peer.createAnswer())
+        answer = add_forwarded_candidates(
+            peer.localDescription.sdp, service.advertise_ips
+        )
     except Exception:
         peer.remove_all_listeners()
         await peer.close()
@@ -429,9 +436,7 @@ async def offer(request):
                 link.keys(player, 0)
                 await service.readiness()
         raise
-    return web.json_response(
-        {"sdp": peer.localDescription.sdp, "type": peer.localDescription.type}
-    )
+    return web.json_response({"sdp": answer, "type": peer.localDescription.type})
 
 
 async def static(request):
@@ -475,9 +480,12 @@ def create_app(
     secret: str,
     ice_servers: list[dict] | None = None,
     player_count: int = 2,
+    advertise_ips: list[str] | None = None,
 ):
     app = web.Application(middlewares=[security], client_max_size=MAX_SAVE + 4096)
-    app[SERVICE] = Service(data, roms, secret, ice_servers or [], player_count)
+    app[SERVICE] = Service(
+        data, roms, secret, ice_servers or [], player_count, advertise_ips or []
+    )
     app.cleanup_ctx.append(lifetime)
     app.add_routes(
         [
@@ -505,8 +513,12 @@ if __name__ == "__main__":
             os.environ["BROKER_SECRET"],
             json.loads(os.environ.get("ICE_SERVERS", "[]")),
             int(os.environ.get("PLAYER_COUNT", "2")),
+            [
+                ip.strip()
+                for ip in os.environ.get("ADVERTISE_IPS", "").split(",")
+                if ip.strip()
+            ],
         ),
-        # Bridged containers need all interfaces; host-network Compose uses loopback.
         host=os.environ.get("BIND_HOST", "0.0.0.0"),  # nosec B104
         port=int(os.environ.get("PORT", "8080")),
     )

@@ -2,12 +2,17 @@ services:
   gba-link:
     build: .
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "50000-50031:50000-50031/udp"
+    sysctls:
+      net.ipv4.ip_local_port_range: "50000 50031"
     environment:
       BROKER_SECRET: ${GBA_LINK_BROKER_SECRET:?Set a shared broker secret}
-      BIND_HOST: 127.0.0.1
+      BIND_HOST: 0.0.0.0
       PORT: 8080
       PLAYER_COUNT: ${GBA_LINK_PLAYER_COUNT:-2}
+      ADVERTISE_IPS: ${GBA_LINK_ADVERTISE_IPS:?Set the server public and LAN IPs, comma-separated}
       ICE_SERVERS: ${GBA_LINK_ICE_SERVERS:-[]}
     volumes:
       - ${ROMM_LIBRARY:?Set the RomM library directory}:/roms:ro

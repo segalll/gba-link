@@ -41,6 +41,7 @@ async def client(tmp_path, test_rom, request):
         test_rom.parent,
         "test-secret",
         player_count=getattr(request, "param", 2),
+        advertise_ips=["203.0.113.10", "192.0.2.10"],
     )
     async with TestClient(TestServer(app)) as client:
         yield client
