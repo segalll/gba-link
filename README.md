@@ -6,7 +6,7 @@ run on the server. Requires Linux and a RomM build with `per_player_saves` suppo
 ```sh
 export ROMM_LIBRARY=/absolute/path/to/romm/library
 export GBA_LINK_BROKER_SECRET='a-long-random-shared-secret'
-export GBA_LINK_ADVERTISE_IPS='YOUR_PUBLIC_IP,YOUR_SERVER_LAN_IP'
+export GBA_LINK_ADVERTISE_IPS='YOUR_SERVER_LAN_IP'
 docker compose up --build -d
 ```
 
@@ -55,10 +55,18 @@ Forward **UDP 50000–50031** on your router to the same ports on the Docker hos
 Compose publishes those ports and restricts the container's automatic port
 allocation to that range. Caddy handles HTTP; media and controls use UDP directly.
 
-`ADVERTISE_IPS` is a comma-separated list of the server's reachable IP addresses.
-Include its public IP for remote players and its LAN IP for local players.
-Use IP addresses, not domain names. Update this setting and recreate the container
-if your public IP changes. TURN and STUN servers are not required with this setup.
+gba-link discovers its public IP using Cloudflare's public STUN service
+(`stun.cloudflare.com:3478`). STUN only discovers addresses; streams connect
+directly to your server. No coturn service or public IP setting is needed.
+
+`ADVERTISE_IPS` adds addresses to advertise. Set it to the Docker host's LAN IP
+for local players to avoid NAT reflection. It accepts comma-separated IP addresses
+and DNS names, resolved when a player connects. To disable automatic discovery,
+set `ICE_SERVERS` to `[]` and include your public IP or hostname in `ADVERTISE_IPS`.
+The included Compose file uses `GBA_LINK_ADVERTISE_IPS` and `GBA_LINK_ICE_SERVERS`.
+
+Caddy needs access to gba-link on TCP 8080. RomM's broker requests use HTTPS via
+Caddy with the configuration above. TCP 8080 does not need a router port forward.
 
 Set `PLAYER_COUNT` to `2`, `3`, or `4` in the service environment (default: `2`).
 With the included Compose file, set `GBA_LINK_PLAYER_COUNT` instead. All players

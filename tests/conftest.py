@@ -40,6 +40,7 @@ async def client(tmp_path, test_rom, request):
         tmp_path / "data",
         test_rom.parent,
         "test-secret",
+        ice_servers=[],
         player_count=getattr(request, "param", 2),
         advertise_ips=["203.0.113.10", "192.0.2.10"],
     )

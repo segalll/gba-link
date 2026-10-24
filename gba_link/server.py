@@ -11,7 +11,6 @@ import shutil
 import time
 import zipfile
 from dataclasses import dataclass, field
-from ipaddress import ip_address
 from pathlib import Path
 
 from aiohttp import web
@@ -60,7 +59,7 @@ class Service:
             raise ValueError("PLAYER_COUNT must be 2, 3, or 4")
         self.data, self.roms, self.secret = data, roms.resolve(), secret
         self.ice_servers = ice_servers
-        self.advertise_ips = [str(ip_address(ip)) for ip in advertise_ips]
+        self.advertise_ips = advertise_ips
         self.player_count = player_count
         self.lock = asyncio.Lock()
         self.seats: list[Seat] = []
@@ -423,9 +422,15 @@ async def offer(request):
             RTCSessionDescription(sdp=payload["sdp"], type="offer")
         )
         await peer.setLocalDescription(await peer.createAnswer())
-        answer = add_forwarded_candidates(
-            peer.localDescription.sdp, service.advertise_ips
-        )
+        try:
+            answer = await add_forwarded_candidates(
+                peer.localDescription.sdp, service.advertise_ips
+            )
+        except OSError as exc:
+            log.warning("Could not resolve ADVERTISE_IPS: %s", exc)
+            raise web.HTTPServiceUnavailable(
+                text="Could not resolve ADVERTISE_IPS"
+            ) from exc
     except Exception:
         peer.remove_all_listeners()
         await peer.close()
@@ -482,9 +487,11 @@ def create_app(
     player_count: int = 2,
     advertise_ips: list[str] | None = None,
 ):
+    if ice_servers is None:
+        ice_servers = [{"urls": "stun:stun.cloudflare.com:3478"}]
     app = web.Application(middlewares=[security], client_max_size=MAX_SAVE + 4096)
     app[SERVICE] = Service(
-        data, roms, secret, ice_servers or [], player_count, advertise_ips or []
+        data, roms, secret, ice_servers, player_count, advertise_ips or []
     )
     app.cleanup_ctx.append(lifetime)
     app.add_routes(
@@ -506,12 +513,13 @@ def create_app(
 
 
 if __name__ == "__main__":
+    ice_servers = os.environ.get("ICE_SERVERS")
     web.run_app(
         create_app(
             Path(os.environ.get("DATA_ROOT", "/data")),
             Path(os.environ.get("ROM_ROOT", "/roms")),
             os.environ["BROKER_SECRET"],
-            json.loads(os.environ.get("ICE_SERVERS", "[]")),
+            json.loads(ice_servers) if ice_servers else None,
             int(os.environ.get("PLAYER_COUNT", "2")),
             [
                 ip.strip()

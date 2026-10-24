@@ -12,8 +12,8 @@ services:
       BIND_HOST: 0.0.0.0
       PORT: 8080
       PLAYER_COUNT: ${GBA_LINK_PLAYER_COUNT:-2}
-      ADVERTISE_IPS: ${GBA_LINK_ADVERTISE_IPS:?Set the server public and LAN IPs, comma-separated}
-      ICE_SERVERS: ${GBA_LINK_ICE_SERVERS:-[]}
+      ADVERTISE_IPS: ${GBA_LINK_ADVERTISE_IPS:-}
+      ICE_SERVERS: ${GBA_LINK_ICE_SERVERS:-}
     volumes:
       - ${ROMM_LIBRARY:?Set the RomM library directory}:/roms:ro
       - gba-link-data:/data
