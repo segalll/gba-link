@@ -132,7 +132,6 @@ async function connect() {
     peer = new RTCPeerConnection({ iceServers: context.iceServers });
     const stream = new MediaStream();
     screen.srcObject = stream;
-    screen.muted = true;
     peer.ontrack = (event) => {
       stream.addTrack(event.track);
       screen.play().catch(() => {});

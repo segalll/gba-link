@@ -39,8 +39,20 @@ class Seat:
     save: Path | None
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     peer: RTCPeerConnection | None = None
+    negotiation: asyncio.Task | None = None
     last_input: float = 0
     ready: bool = False
+
+    async def close(self):
+        if self.negotiation:
+            await asyncio.gather(self.negotiation, return_exceptions=True)
+            self.negotiation = None
+        if self.peer:
+            # Peer callbacks also take the service lock, which is held during close.
+            self.peer.remove_all_listeners()
+            await self.peer.close()
+            self.peer = None
+        self.ready = False
 
 
 class Service:
@@ -74,13 +86,22 @@ class Service:
         # The URL fragment keeps the token out of access logs and Referer headers.
         return {"url": f"{PREFIX}/#token={seat.token}"}
 
-    def import_save(self, payload: dict, user_id: int) -> Path | None:
+    def import_path(self, payload: dict) -> Path | None:
         name = payload.get("save", {}).get("archive")
         if not name:
             return None
         if not isinstance(name, str) or not re.fullmatch(r"[0-9a-f]{32}", name):
             raise web.HTTPBadRequest(text="Invalid save import")
-        source = self.data / "imports" / name
+        return self.data / "imports" / name
+
+    def discard_import(self, payload: dict):
+        if source := self.import_path(payload):
+            source.unlink(missing_ok=True)
+
+    def import_save(self, payload: dict, user_id: int) -> Path | None:
+        source = self.import_path(payload)
+        if source is None:
+            return None
         if not source.is_file():
             raise web.HTTPBadRequest(text="Save import expired")
         assert self.session_id is not None
@@ -142,11 +163,8 @@ class Service:
             self.seal()
         await self.checkpoint()
         seats, self.seats = self.seats, []
-        # Peer callbacks also take the service lock, which is held during close.
         for seat in seats:
-            if seat.peer:
-                seat.peer.remove_all_listeners()
-                await seat.peer.close()
+            await seat.close()
         if self.link:
             await asyncio.to_thread(self.link.close)
             self.link = None
@@ -227,6 +245,7 @@ async def activate(request):
     async with service.lock:
         if service.session_id:
             if service.session_id == sid and service.seats[0].user_id == uid:
+                service.discard_import(payload)
                 return web.json_response(service.url(service.seats[0]))
             raise web.HTTPConflict(text="A room is already active")
         root = service.data / "sessions" / sid
@@ -258,6 +277,7 @@ async def join(request):
             raise web.HTTPConflict(text="The room is closing")
         for seat in service.seats:
             if seat.user_id == uid:
+                service.discard_import(payload)
                 return web.json_response(service.url(seat))
         if len(service.seats) == service.player_count:
             raise web.HTTPConflict(text="The room is full")
@@ -363,10 +383,7 @@ async def offer(request):
         if not service.link:
             raise web.HTTPConflict(text="Waiting for all players")
         link = service.link
-        if seat.peer:
-            seat.peer.remove_all_listeners()
-            await seat.peer.close()
-        seat.ready = False
+        await seat.close()
         service.link.keys(player, 0)
         peer = RTCPeerConnection(
             RTCConfiguration(
@@ -411,19 +428,13 @@ async def offer(request):
             seat.ready = True
             link.keys(player, mask)
 
-    try:
-        video = peer.addTransceiver(Video(link, player), direction="sendonly")
-        codecs = RTCRtpSender.getCapabilities("video").codecs
-        video.setCodecPreferences(
-            sorted(codecs, key=lambda codec: codec.mimeType != "video/H264")
-        )
-        peer.addTrack(Audio(link, player))
+    async def negotiate():
         await peer.setRemoteDescription(
             RTCSessionDescription(sdp=payload["sdp"], type="offer")
         )
         await peer.setLocalDescription(await peer.createAnswer())
         try:
-            answer = await add_forwarded_candidates(
+            return await add_forwarded_candidates(
                 peer.localDescription.sdp, service.advertise_ips
             )
         except OSError as exc:
@@ -431,13 +442,23 @@ async def offer(request):
             raise web.HTTPServiceUnavailable(
                 text="Could not resolve ADVERTISE_IPS"
             ) from exc
-    except Exception:
-        peer.remove_all_listeners()
-        await peer.close()
+
+    try:
+        video = peer.addTransceiver(Video(link, player), direction="sendonly")
+        codecs = RTCRtpSender.getCapabilities("video").codecs
+        video.setCodecPreferences(
+            sorted(codecs, key=lambda codec: codec.mimeType != "video/H264")
+        )
+        peer.addTrack(Audio(link, player))
+        seat.negotiation = asyncio.create_task(negotiate())
+        answer = await asyncio.shield(seat.negotiation)
+        async with service.lock:
+            if seat not in service.seats or seat.peer is not peer:
+                raise web.HTTPConflict(text="The connection was replaced or closed")
+    except (Exception, asyncio.CancelledError):
         async with service.lock:
             if seat.peer is peer:
-                seat.peer = None
-                seat.ready = False
+                await seat.close()
                 link.keys(player, 0)
                 await service.readiness()
         raise

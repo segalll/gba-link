@@ -9,6 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from aiortc import (
     MediaStreamTrack,
     RTCConfiguration,
+    RTCIceGatherer,
     RTCPeerConnection,
     RTCSessionDescription,
 )
@@ -98,6 +99,19 @@ async def test_separate_saves_survive_exit_and_new_session(client, test_rom):
         assert (
             await client.post(f"{API}/{action}", json=payload, headers=AUTH)
         ).status == 200
+    pending = await upload(archive())
+    for uid, action in ((1, "activate"), (count, "join")):
+        extra = await upload(archive(content=b"\xff" * 32768))
+        payload = {
+            **activation(test_rom),
+            "user": {"id": uid},
+            "save": {"archive": extra},
+        }
+        assert (
+            await client.post(f"{API}/{action}", json=payload, headers=AUTH)
+        ).status == 200
+        imports = client.server.app[SERVICE].data / "imports"
+        assert {p.name for p in imports.iterdir()} == {pending}
     response = await client.post(
         f"{API}/seal", json={"session_id": "a1b2"}, headers=AUTH
     )
@@ -246,6 +260,70 @@ async def test_roster_survives_service_restart(client, test_rom):
             f"{API}/exit", json={"session_id": "a1b2"}, headers=AUTH
         )
         assert response.status == 200
+
+
+@pytest.mark.parametrize("action", ["exit", "replace"])
+async def test_pending_offer_is_closed_before_exit_or_replacement(
+    client, test_rom, action
+):
+    first = await activate(client, test_rom)
+    await client.post(
+        f"{API}/join", json={"session_id": "a1b2", "user": {"id": 2}}, headers=AUTH
+    )
+    browser = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+    browser.addTransceiver("video", direction="recvonly")
+    browser.addTransceiver("audio", direction="recvonly")
+    browser.createDataChannel("inputs")
+    await browser.setLocalDescription(await browser.createOffer())
+    headers = {"Authorization": "Bearer " + first["url"].split("token=")[1]}
+    payload = {"sdp": browser.localDescription.sdp}
+    started, resume = asyncio.Event(), asyncio.Event()
+    gather = RTCIceGatherer.gather
+    transports = {}
+    errors = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: errors.append(context))
+
+    async def delayed(self):
+        started.set()
+        await resume.wait()
+        await gather(self)
+        transports[self] = [p.transport for p in self._connection._protocols]
+
+    requests = []
+    try:
+        with patch.object(RTCIceGatherer, "gather", delayed):
+            requests.append(
+                asyncio.create_task(
+                    client.post("/gba-link/offer", json=payload, headers=headers)
+                )
+            )
+            await asyncio.wait_for(started.wait(), 1)
+            peer = client.server.app[SERVICE].seats[0].peer
+            gatherer = peer.getTransceivers()[
+                0
+            ].receiver.transport.transport.iceGatherer
+            request = (
+                client.post(f"{API}/exit", json={"session_id": "a1b2"}, headers=AUTH)
+                if action == "exit"
+                else client.post("/gba-link/offer", json=payload, headers=headers)
+            )
+            requests.append(asyncio.create_task(request))
+            await asyncio.sleep(0.05)
+            assert peer.connectionState != "closed"
+            resume.set()
+            stale, current = await asyncio.wait_for(asyncio.gather(*requests), 2)
+            assert (stale.status, current.status) == (409, 200)
+            assert peer.connectionState == "closed"
+            assert transports[gatherer]
+            assert all(t.is_closing() for t in transports[gatherer])
+            assert not errors
+    finally:
+        resume.set()
+        await asyncio.gather(*requests, return_exceptions=True)
+        await browser.close()
+        loop.set_exception_handler(previous_handler)
 
 
 @pytest.mark.parametrize(
